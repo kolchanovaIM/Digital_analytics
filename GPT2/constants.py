@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QPen, QBrush, QFont
 from PyQt6.QtWidgets import (
     QWidget,
+    QMainWindow,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -53,11 +54,13 @@ class TitleBar(QWidget):
         self._maximized = False
         self.setFixedHeight(42)
         self.setObjectName("TitleBar")
-        self.setStyleSheet(
-            f"""
-            QWidget#TitleBar {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {TITLE_GRADIENT_START}, stop:1 {TITLE_GRADIENT_END});
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        self.setStyleSheet(f"""
+            #TitleBar {{
+                background-color: transparent;
             }}
+
             QToolButton {{
                 border: none;
                 background: transparent;
@@ -69,15 +72,16 @@ class TitleBar(QWidget):
                 max-height: 24px;
                 border-radius: 8px;
             }}
+
             QToolButton:hover {{
                 background: rgba(255,255,255,0.35);
             }}
+
             QLabel {{
                 color: #17333D;
                 font-weight: 600;
             }}
-            """
-        )
+        """)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 4, 8, 4)
@@ -102,6 +106,17 @@ class TitleBar(QWidget):
         self.btn_close.setText("✕")
         self.btn_close.clicked.connect(self.closeRequested.emit)
         layout.addWidget(self.btn_close)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+
+        gradient = QLinearGradient(0, 0, self.width(), 0)
+        gradient.setColorAt(0, QColor(TITLE_GRADIENT_START))
+        gradient.setColorAt(1, QColor(TITLE_GRADIENT_END))
+
+        painter.fillRect(self.rect(), gradient)
+
+        super().paintEvent(event)
 
     def setTitle(self, title: str) -> None:
         self.title_label.setText(title)
@@ -142,15 +157,17 @@ class TitleBar(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
-class FramelessWindow(QWidget):
+class FramelessWindow(QMainWindow):
     def __init__(self, title: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowSystemMenuHint
-            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.CustomizeWindowHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.setStyleSheet(f"background: {WINDOW_BG};")
@@ -159,18 +176,26 @@ class FramelessWindow(QWidget):
         self._title_bar.maximizeRequested.connect(self.toggleMaximizeRestore)
         self._title_bar.closeRequested.connect(self.close)
 
-        self._body = QFrame(self)
+        central = QWidget(self)
+        self.setCentralWidget(central)
+
+        self._body = QFrame()
         self._body.setObjectName("BodyFrame")
-        self._body.setStyleSheet("QFrame#BodyFrame { background: transparent; }")
+        self._body.setStyleSheet(
+            "QFrame#BodyFrame { background: transparent; }"
+        )
+
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(0, 0, 0, 0)
         self._body_layout.setSpacing(0)
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
         layout.addWidget(self._title_bar)
         layout.addWidget(self._body, 1)
+        self._normal_geometry = self.geometry()
 
     @property
     def title_bar(self) -> TitleBar:
@@ -185,9 +210,11 @@ class FramelessWindow(QWidget):
         self._title_bar.setTitle(title)
 
     def toggleMaximizeRestore(self) -> None:
+
         if self.isMaximized():
             self.showNormal()
             self._title_bar.setMaximizedState(False)
+
         else:
             self.showMaximized()
             self._title_bar.setMaximizedState(True)

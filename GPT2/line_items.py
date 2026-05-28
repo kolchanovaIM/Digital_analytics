@@ -3,11 +3,11 @@ from __future__ import annotations
 import math
 from typing import Optional, TYPE_CHECKING
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF, QFont
 from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsSimpleTextItem
 
 if TYPE_CHECKING:
-    from flowchart_items import FlowchartItem
+    from flowchart_items_2 import FlowchartItem
 
 
 class BaseLine(QGraphicsPathItem):
@@ -86,8 +86,154 @@ class BaseLine(QGraphicsPathItem):
 
 
 class ArrowLine(BaseLine):
-    pass
 
+    def __init__(
+            self,
+            source_item,
+            target_item,
+            label="",
+            is_back_edge=False,
+            parent=None
+    ):
 
-class DashedLine(BaseLine):
-    pass
+        # СНАЧАЛА создаём атрибут
+        self.custom_path = None
+
+        # ПОТОМ вызываем BaseLine
+        super().__init__(
+            source_item,
+            target_item,
+            label,
+            is_back_edge,
+            parent
+        )
+
+    def boundingRect(self):
+
+        rect = super().boundingRect()
+
+        return rect.adjusted(-40, -40, 40, 40)
+
+    def set_path_points(self, points):
+
+        self.custom_path = points
+
+        self.update_path()
+
+    def update_path(self):
+
+        path = QPainterPath()
+
+        # =====================================
+        # CUSTOM PATH (ЦИКЛ)
+        # =====================================
+
+        if self.custom_path and len(self.custom_path) > 1:
+
+            path.moveTo(self.custom_path[0])
+
+            for pt in self.custom_path[1:]:
+                path.lineTo(pt)
+
+        # =====================================
+        # ОБЫЧНАЯ СТРЕЛКА
+        # =====================================
+
+        else:
+
+            src_rect = self.source_item.sceneBoundingRect()
+            tgt_rect = self.target_item.sceneBoundingRect()
+
+            src_center = src_rect.center()
+            tgt_center = tgt_rect.center()
+
+            # ВНИЗ
+            if tgt_center.y() > src_center.y():
+
+                start_point = QPointF(
+                    src_center.x(),
+                    src_rect.bottom()
+                )
+
+                end_point = QPointF(
+                    tgt_center.x(),
+                    tgt_rect.top()
+                )
+
+            # ВВЕРХ
+            elif tgt_center.y() < src_center.y():
+
+                start_point = QPointF(
+                    src_center.x(),
+                    src_rect.top()
+                )
+
+                end_point = QPointF(
+                    tgt_center.x(),
+                    tgt_rect.bottom()
+                )
+
+            # ГОРИЗОНТАЛЬНО
+            else:
+
+                if tgt_center.x() > src_center.x():
+
+                    start_point = QPointF(
+                        src_rect.right(),
+                        src_center.y()
+                    )
+
+                    end_point = QPointF(
+                        tgt_rect.left(),
+                        tgt_center.y()
+                    )
+
+                else:
+
+                    start_point = QPointF(
+                        src_rect.left(),
+                        src_center.y()
+                    )
+
+                    end_point = QPointF(
+                        tgt_rect.right(),
+                        tgt_center.y()
+                    )
+
+            path.moveTo(start_point)
+
+            dx = abs(start_point.x() - end_point.x())
+            dy = abs(start_point.y() - end_point.y())
+
+            # Ортогональный маршрут
+            if dx > 20 and dy > 20:
+                mid_y = (start_point.y() + end_point.y()) / 2
+
+                path.lineTo(start_point.x(), mid_y)
+                path.lineTo(end_point.x(), mid_y)
+
+            path.lineTo(end_point)
+
+        self.prepareGeometryChange()
+
+        self.setPath(path)
+
+        # =====================================
+        # LABEL
+        # =====================================
+
+        if self.label:
+
+            center_pt = path.pointAtPercent(0.5)
+
+            self._label_item.setText(str(self.label))
+
+            self._label_item.setPos(
+                center_pt + QPointF(10, -10)
+            )
+
+            self._label_item.setVisible(True)
+
+        else:
+
+            self._label_item.setVisible(False)

@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize, QPointF, Q
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QPlainTextEdit,
     QGraphicsView, QGraphicsScene, QPushButton, QFileDialog, QMessageBox, QFrame,
-    QGraphicsDropShadowEffect, QInputDialog, QSizePolicy, QLabel  # <--- Добавьте QSizePolicy сюда
+    QGraphicsDropShadowEffect, QInputDialog, QSizePolicy, QLabel, QApplication  # <--- Добавьте QSizePolicy сюда
 )
 from PyQt6.QtGui import (
     QColor, QPainter, QPen, QSyntaxHighlighter, QTextCharFormat,
@@ -30,7 +30,7 @@ class PseudocodeHighlighter(QSyntaxHighlighter):
 
         self.control_keywords = [
             "НАЧАЛО", "КОНЕЦ ЕСЛИ", "КОНЕЦ ЦИКЛА", "КОНЕЦ",
-            "ЕСЛИ", "ТО", "ИНАЧЕ", "ПОКА", "ЦИКЛ"
+            "ЕСЛИ", "ТО", "ИНАЧЕ", "ПОКА", "ЦИКЛ", "ВЫПОЛНИТЬ"
         ]
 
         # Контрастный оранжевый цвет для операций ввода/вывода
@@ -253,21 +253,32 @@ class FlowchartGraphicsView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.GRID_STEP = 20
+        self.export_mode = False
         if self.editor_window.manual_mode:
             scene.setBackgroundBrush(QColor("#E2E5E6"))
         else:
             scene.setBackgroundBrush(QColor("#FFFFFF"))
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
+
+        # Во время экспорта вообще не рисуем фон
+        if self.export_mode:
+            return
+
         super().drawBackground(painter, rect)
+
         if not self.editor_window.manual_mode:
             return
+
         left = int(rect.left()) - (int(rect.left()) % self.GRID_STEP)
         top = int(rect.top()) - (int(rect.top()) % self.GRID_STEP)
+
         pen = QPen(QColor("#D0D5D7"), 1, Qt.PenStyle.SolidLine)
         painter.setPen(pen)
+
         for x in range(left, int(rect.right()), self.GRID_STEP):
             painter.drawLine(x, int(rect.top()), x, int(rect.bottom()))
+
         for y in range(top, int(rect.bottom()), self.GRID_STEP):
             painter.drawLine(int(rect.left()), y, int(rect.right()), y)
 
@@ -363,6 +374,7 @@ class EditorWindow(FramelessWindow):
         self.main_menu_callback = main_menu_callback
         self.manual_mode = manual_mode
         self.current_tool = None
+        self.returning_to_menu = False
         self.resize(1100, 750)
 
         # Перекраска верхней панели (title_bar) в небесно-голубой градиент главного меню
@@ -387,6 +399,7 @@ class EditorWindow(FramelessWindow):
             # Скрываем текстовый заголовок, как вы и просили
             for child in self.title_bar.findChildren(QLabel):
                 child.hide()
+
         content_widget = QWidget()
         self.body_layout.addWidget(content_widget, 1)
 
@@ -482,6 +495,18 @@ class EditorWindow(FramelessWindow):
         )
         self.btn_compile.clicked.connect(self.refresh_flowchart)
         self._reposition_compile_button()
+
+    def closeEvent(self, event):
+
+
+        # Если закрываем для возврата в меню —
+        # НЕ завершаем приложение
+        if self.returning_to_menu:
+            event.accept()
+            return
+
+        # Иначе это крестик окна
+        QApplication.quit()
 
     def _reposition_compile_button(self):
         if hasattr(self, 'btn_compile') and hasattr(self, 'floating_panel'):
@@ -753,68 +778,291 @@ class EditorWindow(FramelessWindow):
                         if nxt_id not in processed_nodes:
                             queue.append((nxt_id, x, y + LEVEL_HEIGHT))
 
-            # --- 3. ОЧИСТКА ТЕКСТА И СОЗДАНИЕ ЭЛЕМЕНТОВ СЦЕНЫ ---
+            # --- 3. СОЗДАНИЕ ВСЕХ БЛОКОВ ---
             for node in nodes:
+
                 display_text = node.text.strip()
                 upper_text = display_text.upper()
 
+                # Удаляем ключевые слова из текста блока
+                keywords = [
+                    "ВВОД",
+                    "ВЫВОД",
+                    "ЕСЛИ",
+                    "ТО",
+                    "ИНАЧЕ",
+                    "ПОДГОТОВКА",
+                    "КОММЕНТАРИЙ",
+                    "ПРЕДОПРЕДЕЛЕННЫЙ ПРОЦЕСС:",
+                    "ПАРАЛЛЕЛЬНО"
+                ]
+
+                # Не трогаем НАЧАЛО и КОНЕЦ
+                if upper_text not in ["НАЧАЛО", "КОНЕЦ"]:
+
+                    for kw in keywords:
+
+                        if upper_text.startswith(kw):
+                            display_text = display_text[len(kw):].strip()
+                            upper_text = display_text.upper()
+                            break
+
+                    # Удаляем ТО в конце условия
+                    if display_text.upper().endswith(" ТО"):
+                        display_text = display_text[:-3].strip()
+
+                # Очистка служебных слов
                 if upper_text.endswith(" ТО"):
                     display_text = display_text[:-3].strip()
+
                 elif upper_text.startswith("ТО "):
                     display_text = display_text[3:].strip()
+
                 elif upper_text.startswith("ИНАЧЕ "):
                     display_text = display_text[6:].strip()
-                elif upper_text in ["ТО", "ИНАЧЕ", "КОНЕЦ ЕСЛИ", "КОНЕЦ_ЕСЛИ"]:
+
+                elif upper_text in [
+                    "ТО",
+                    "ИНАЧЕ",
+                    "КОНЕЦ ЕСЛИ",
+                    "КОНЕЦ_ЕСЛИ"
+                ]:
                     continue
 
+                # Создание графического блока
                 item = FlowchartItem(display_text, node.shape)
                 item.item_id = node.id
 
-                pos = node_positions.get(node.id, QPointF(0, node.id * LEVEL_HEIGHT - 150))
-                item.setPos(pos.x() - item.rect.width() / 2, pos.y() - item.rect.height() / 2)
+                # Получаем рассчитанную позицию
+                pos = node_positions.get(
+                    node.id,
+                    QPointF(0, node.id * LEVEL_HEIGHT - 150)
+                )
+
+                # Центрирование блока
+                item.setPos(
+                    pos.x() - item.rect.width() / 2,
+                    pos.y() - item.rect.height() / 2
+                )
+
+                # Добавление на сцену
                 self.scene.addItem(item)
+
+                # Сохраняем в map
                 items_map[node.id] = item
 
-            # --- 4. ОТРИСОВКА СВЯЗУЮЩИХ СТРЕЛОК ---
+            # Обновляем сцену перед созданием стрелок
+            self.scene.update()
+
+            # --- 4. СОЗДАНИЕ ВСЕХ СТРЕЛОК ---
             for edge in edges:
+
                 src_item = items_map.get(edge.source)
                 tgt_item = items_map.get(edge.target)
 
-                if src_item and tgt_item:
-                    label = edge.label
-                    if src_item.shape_type == "decision" and not label:
-                        if tgt_item.pos().x() < src_item.pos().x():
+                # Если какой-то блок не найден — пропускаем
+                if not src_item or not tgt_item:
+                    continue
+
+                # -----------------------------------
+                # Подписи Да / Нет
+                # -----------------------------------
+
+                label = getattr(edge, "label", "") or ""
+
+                if src_item.shape_type == "decision":
+
+                    label_lower = label.lower()
+
+                    if label_lower in ["да", "yes", "то"]:
+                        label = "Да"
+
+                    elif label_lower in ["нет", "no", "иначе"]:
+                        label = "Нет"
+
+                    elif not label:
+
+                        src_center = src_item.sceneBoundingRect().center()
+                        tgt_center = tgt_item.sceneBoundingRect().center()
+
+                        if tgt_center.x() < src_center.x():
                             label = "Да"
                         else:
                             label = "Нет"
-                    elif label and label.lower() == "то":
-                        label = "Да"
-                    elif label and label.lower() == "иначе":
-                        label = "Нет"
 
-                    line = ArrowLine(src_item, tgt_item, label, edge.is_back_edge)
-                    self.scene.addItem(line)
-                    line.update_from_items()
+                # -----------------------------------
+                # Создание стрелки
+                # -----------------------------------
 
+                # -----------------------------------
+                # Создание стрелки
+                # -----------------------------------
+
+                is_back = getattr(edge, "is_back_edge", False)
+
+                line = ArrowLine(
+                    src_item,
+                    tgt_item,
+                    label,
+                    is_back
+                )
+
+                # ОБЯЗАТЕЛЬНО добавляем стрелку на сцену
+                self.scene.addItem(line)
+
+                # -----------------------------------
+                # Возвратная стрелка цикла
+                # -----------------------------------
+
+                if is_back:
+
+                    start_pos = (
+                            src_item.pos() +
+                            QPointF(
+                                src_item.rect.width() / 2,
+                                src_item.rect.height()
+                            )
+                    )
+
+                    end_pos = (
+                            tgt_item.pos() +
+                            QPointF(
+                                tgt_item.rect.width() / 2,
+                                0
+                            )
+                    )
+
+                    offset_x = 150
+
+                    if end_pos.x() < start_pos.x():
+                        offset_x = -150
+
+                    mid1 = QPointF(
+                        start_pos.x(),
+                        start_pos.y() + 25
+                    )
+
+                    mid2 = QPointF(
+                        start_pos.x() + offset_x,
+                        start_pos.y() + 25
+                    )
+
+                    mid3 = QPointF(
+                        end_pos.x() + offset_x,
+                        end_pos.y() - 25
+                    )
+
+                    mid4 = QPointF(
+                        end_pos.x(),
+                        end_pos.y() - 25
+                    )
+
+                    line.custom_path = [
+                        start_pos,
+                        mid1,
+                        mid2,
+                        mid3,
+                        mid4,
+                        end_pos
+                    ]
+
+                # обновляем геометрию ВСЕГДА
+                line.update_path()
+                line.update()
+
+            # Центрируем вид
             self.view.centerOn(0, 0)
 
         except Exception as e:
             QMessageBox.warning(self, "Ошибка рендеринга", f"Произошел сбой при расчете сетки ветвлений:\n{str(e)}")
 
     def action_export_pdf(self):
+
         self.toggle_burger_menu()
-        filepath, _ = QFileDialog.getSaveFileName(self, "Сохранить в PDF", "", "PDF Files (*.pdf)")
-        if filepath and export_scene_to_pdf(self.scene, filepath):
-            QMessageBox.information(self, "Экспорт PDF", "Схема успешно сохранена!")
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить в PDF",
+            "",
+            "PDF Files (*.pdf)"
+        )
+
+        if not filepath:
+            return
+
+        self.view.export_mode = True
+
+        self.view.viewport().update()
+        QApplication.processEvents()
+
+        old_brush = self.scene.backgroundBrush()
+
+        self.scene.setBackgroundBrush(
+            QBrush(Qt.BrushStyle.NoBrush)
+        )
+
+        ok = export_scene_to_png(self.scene, filepath)
+
+        self.scene.setBackgroundBrush(old_brush)
+
+        self.view.export_mode = False
+
+        self.view.viewport().update()
+
+        if ok:
+            QMessageBox.information(
+                self,
+                "Экспорт PDF",
+                "Схема успешно сохранена!"
+            )
 
     def action_export_png(self):
+
         self.toggle_burger_menu()
-        filepath, _ = QFileDialog.getSaveFileName(self, "Сохранить в PNG", "", "PNG Files (*.png)")
-        if filepath and export_scene_to_png(self.scene, filepath):
-            QMessageBox.information(self, "Экспорт PNG", "Схема успешно сохранена!")
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить в PNG",
+            "",
+            "PNG Files (*.png)"
+        )
+
+        if not filepath:
+            return
+
+        # Включаем режим экспорта
+        self.view.export_mode = True
+
+        self.view.viewport().update()
+        QApplication.processEvents()
+
+        old_brush = self.scene.backgroundBrush()
+
+        self.scene.setBackgroundBrush(
+            QBrush(Qt.BrushStyle.NoBrush)
+        )
+
+        ok = export_scene_to_png(self.scene, filepath)
+
+        self.scene.setBackgroundBrush(old_brush)
+
+        self.view.export_mode = False
+
+        self.view.viewport().update()
+
+        if ok:
+            QMessageBox.information(
+                self,
+                "Экспорт PNG",
+                "Схема успешно сохранена!"
+            )
 
     def action_back_to_menu(self):
+
+        self.returning_to_menu = True
+
         self.close()
+
         if self.main_menu_callback:
             self.main_menu_callback()
 
