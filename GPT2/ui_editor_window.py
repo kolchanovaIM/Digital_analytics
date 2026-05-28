@@ -15,63 +15,77 @@ from PyQt6.QtGui import (
 from constants import FramelessWindow, base_font, make_tool_button, SCENE_RECT
 from core_parser import parse_pseudocode
 from export_utils import export_scene_to_png, export_scene_to_pdf
-from flowchart_items_2 import FlowchartItem, ManualArrowItem
+from flowchart_items_2 import FlowchartItem, ManualArrowItem, CommentItem
 from line_items import ArrowLine
 
 
 class PseudocodeHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.formats = {}
 
-        # Насыщенный синий цвет для ключевых слов управления алгоритмом
-        self.keyword_format = QTextCharFormat()
-        self.keyword_format.setForeground(QColor("#005FB8"))
-        self.keyword_format.setFontWeight(QFont.Weight.Bold)
+        # Настройка цветов
+        blue_format = QTextCharFormat()
+        blue_format.setForeground(QColor("#1A5F7A"))
+        blue_format.setFontWeight(QFont.Weight.Bold)
 
-        self.control_keywords = [
-            "НАЧАЛО", "КОНЕЦ ЕСЛИ", "КОНЕЦ ЦИКЛА", "КОНЕЦ",
-            "ЕСЛИ", "ТО", "ИНАЧЕ", "ПОКА", "ЦИКЛ", "ВЫПОЛНИТЬ"
+        orange_format = QTextCharFormat()
+        orange_format.setForeground(QColor("#F57C00"))
+        orange_format.setFontWeight(QFont.Weight.Bold)
+
+        green_format = QTextCharFormat()
+        green_format.setForeground(QColor("#4CAF50"))
+        green_format.setFontItalic(True)
+
+        # Регистрация ключевых слов
+        keywords_blue = [
+            "НАЧАЛО", "КОНЕЦ", "ЕСЛИ", "ТО", "ИНАЧЕ", "КОНЕЦ ЕСЛИ", "КОНЕЦ_ЕСЛИ",
+            "ПОКА", "ВЫПОЛНИТЬ", "КОНЕЦ ПОКА", "КОНЕЦ_ПОКА", "ФУНКЦИЯ", "ПРОЦЕДУРА",
+            "ПОДПРОГРАММА", "ПАРАЛЛЕЛЬНО", "КОНЕЦ ПАРАЛЛЕЛЬНО", "ГРАНИЦА ЦИКЛА НАЧАЛО:",
+            "ГРАНИЦА ЦИКЛА КОНЕЦ", "ГРАНИЦА_ЦИКЛА_НАЧАЛО:", "ГРАНИЦА_ЦИКЛА_КОНЕЦ"
         ]
+        for kw in keywords_blue:
+            self.formats[kw] = blue_format
 
-        # Контрастный оранжевый цвет для операций ввода/вывода
-        self.io_format = QTextCharFormat()
-        self.io_format.setForeground(QColor("#D35400"))
-        self.io_format.setFontWeight(QFont.Weight.Bold)
+        keywords_orange = ["ВВОД", "ВЫВОД", "INPUT", "OUTPUT", "READ", "WRITE", "PRINT"]
+        for kw in keywords_orange:
+            self.formats[kw] = orange_format
 
-        self.io_keywords = [
-            "ВВЕДИ", "ВВОД", "ВЫВЕДИ", "ВЫВОД", "ПЕЧАТЬ"
-        ]
+        # Комментарии отдельно
+        self.comment_keywords = ["КОММЕНТАРИЙ", "COMMENT", "REM", "//"]
+        self.comment_format = green_format
 
     def highlightBlock(self, text: str) -> None:
-        """
-        Переопределенный метод Qt. Вызывается автоматически для каждой строки текста.
-        Использует прямой поиск подстрок средствами Python без QRegularExpression.
-        """
-        if not text:
-            return
+        upper_text = text.upper()
 
-        # Приводим строку к верхнему регистру для регистронезависимого поиска
-        text_upper = text.upper()
+        # 1. Проверяем наличие комментариев в строке
+        for c_kw in self.comment_keywords:
+            idx = upper_text.find(c_kw)
+            if idx != -1:
+                # Подсвечиваем всю оставшуюся часть строки как комментарий
+                self.setFormat(idx, len(text) - idx, self.comment_format)
+                # Подсвечиваем ключевые слова только ДО комментария
+                upper_text = upper_text[:idx]
+                break
 
-        # 1. Подсветка управляющих ключевых слов (Синий)
-        for keyword in self.control_keywords:
-            start_idx = text_upper.find(keyword)
-            while start_idx != -1:
-                # Проверяем границы слова, чтобы не подсвечивать части других слов
-                if self._is_whole_word(text_upper, start_idx, len(keyword)):
-                    self.setFormat(start_idx, len(keyword), self.keyword_format)
-                # Ищем следующее вхождение этого же слова в строке
-                start_idx = text_upper.find(keyword, start_idx + len(keyword))
+        # 2. Подсветка обычных ключевых слов через substring-поиск
+        for kw, fmt in self.formats.items():
+            start = 0
+            while True:
+                start = upper_text.find(kw, start)
+                if start == -1:
+                    break
 
-        # 2. Подсветка ключевых слов ввода/вывода (Оранжевый)
-        for keyword in self.io_keywords:
-            start_idx = text_upper.find(keyword)
-            while start_idx != -1:
-                # Проверяем границы слова
-                if self._is_whole_word(text_upper, start_idx, len(keyword)):
-                    self.setFormat(start_idx, len(keyword), self.io_format)
-                # Ищем следующее вхождение
-                start_idx = text_upper.find(keyword, start_idx + len(keyword))
+                # Проверяем границы слова, чтобы "ТО" не подсвечивалось внутри "ГОТОВО"
+                before_ok = (start == 0 or not upper_text[start - 1].isalnum() and upper_text[start - 1] != '_')
+                end_idx = start + len(kw)
+                after_ok = (end_idx == len(upper_text) or not upper_text[end_idx].isalnum() and upper_text[
+                    end_idx] != '_')
+
+                if before_ok and after_ok:
+                    self.setFormat(start, len(kw), fmt)
+
+                start += len(kw)
 
     def _is_whole_word(self, text: str, start: int, length: int) -> bool:
         """
@@ -298,8 +312,17 @@ class FlowchartGraphicsView(QGraphicsView):
             super().wheelEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        # Строгая проверка: инструмент должен срабатывать ТОЛЬКО в ручном режиме
+        # и только если пользователь кликает по пустому месту сцены, а не по кнопкам/элементам
         if self.editor_window.manual_mode and self.editor_window.current_tool:
             if event.button() == Qt.MouseButton.LeftButton:
+                # Проверяем, нет ли под курсором уже существующего FlowchartItem
+                item_at_click = self.itemAt(event.position().toPoint())
+                if item_at_click is not None and isinstance(item_at_click, FlowchartItem):
+                    # Если кликнули на существующий блок, даем Qt обработать выделение/перетаскивание
+                    super().mousePressEvent(event)
+                    return
+
                 scene_pos = self.mapToScene(event.position().toPoint())
                 snap_x = round(scene_pos.x() / self.GRID_STEP) * self.GRID_STEP
                 snap_y = round(scene_pos.y() / self.GRID_STEP) * self.GRID_STEP
@@ -347,19 +370,24 @@ class FlowchartGraphicsView(QGraphicsView):
         padding = 12
         max_w = max(10.0, item.rect.width() - (padding * 2))
         max_h = max(10.0, item.rect.height() - (padding * 2))
-        if item.shape_type in ["decision", "io"]:
+
+        if item.shape_type in ["decision", "if", "условие", "если", "io", "ввод", "вывод"]:
             max_w -= 15
+
         doc = QTextDocument()
         loop_guard = 0
         while current_size > 5 and loop_guard < 20:
-            loop_guard += 1
             font.setPointSize(current_size)
             doc.setDefaultFont(font)
             doc.setTextWidth(max_w)
             doc.setPlainText(item.text)
-            if doc.idealWidth() <= max_w and doc.size().height() <= max_h:
+
+            if doc.size().height() <= max_h:
                 break
+
             current_size -= 1
+            loop_guard += 1
+
         item.custom_font = font
 
 
@@ -653,6 +681,31 @@ class EditorWindow(FramelessWindow):
             self.burger_btn.raise_()
         self.anim.start()
 
+    def _calculate_back_edge_path(self, src_item, tgt_item):
+        src_rect = src_item.sceneBoundingRect()
+        tgt_rect = tgt_item.sceneBoundingRect()
+
+        start_pos = QPointF(src_rect.center().x(), src_rect.bottom())
+        end_pos = QPointF(tgt_rect.center().x(), tgt_rect.top())
+
+        # Проверяем, есть ли блоки слева и справа
+        scene_rect = self.scene.sceneRect()
+        left_space = abs(scene_rect.left() - min(src_rect.left(), tgt_rect.left()))
+        right_space = abs(scene_rect.right() - max(src_rect.right(), tgt_rect.right()))
+
+        # Выбираем сторону с большим свободным пространством
+        if right_space > left_space:
+            offset_x = max(src_rect.width(), tgt_rect.width()) + 60  # вправо
+        else:
+            offset_x = -(max(src_rect.width(), tgt_rect.width()) + 60)  # влево
+
+        mid1 = QPointF(start_pos.x(), start_pos.y() + 30)
+        mid2 = QPointF(start_pos.x() + offset_x, start_pos.y() + 30)
+        mid3 = QPointF(end_pos.x() + offset_x, end_pos.y() - 30)
+        mid4 = QPointF(end_pos.x(), end_pos.y() - 30)
+
+        return [start_pos, mid1, mid2, mid3, mid4, end_pos]
+
     def refresh_flowchart(self):
         if self.manual_mode:
             return
@@ -703,12 +756,10 @@ class EditorWindow(FramelessWindow):
                 node_positions[node_id] = QPointF(x, y)
                 processed_nodes.add(node_id)
 
-                # Если это ромб (Условие)
                 if node.shape == "decision" and len(outgoing_edges[node_id]) >= 2:
                     true_next_id = None
                     false_next_id = None
 
-                    # Определяем целевые узлы для веток "Да" и "Нет"
                     for edge in outgoing_edges[node_id]:
                         if edge.label and edge.label.lower() in ["да", "yes", "то"]:
                             true_next_id = edge.target
@@ -778,202 +829,181 @@ class EditorWindow(FramelessWindow):
                         if nxt_id not in processed_nodes:
                             queue.append((nxt_id, x, y + LEVEL_HEIGHT))
 
-            # --- 3. СОЗДАНИЕ ВСЕХ БЛОКОВ ---
-            for node in nodes:
+            # --- 3. СОЗДАНИЕ ОСНОВНЫХ БЛОКОВ СХЕМЫ ---
+            comments_queue = []
 
+            for node in nodes:
                 display_text = node.text.strip()
                 upper_text = display_text.upper()
 
-                # Удаляем ключевые слова из текста блока
-                keywords = [
-                    "ВВОД",
-                    "ВЫВОД",
-                    "ЕСЛИ",
-                    "ТО",
-                    "ИНАЧЕ",
-                    "ПОДГОТОВКА",
-                    "КОММЕНТАРИЙ",
-                    "ПРЕДОПРЕДЕЛЕННЫЙ ПРОЦЕСС:",
-                    "ПАРАЛЛЕЛЬНО"
-                ]
-
-                # Не трогаем НАЧАЛО и КОНЕЦ
-                if upper_text not in ["НАЧАЛО", "КОНЕЦ"]:
-
-                    for kw in keywords:
-
-                        if upper_text.startswith(kw):
-                            display_text = display_text[len(kw):].strip()
-                            upper_text = display_text.upper()
-                            break
-
-                    # Удаляем ТО в конце условия
-                    if display_text.upper().endswith(" ТО"):
-                        display_text = display_text[:-3].strip()
-
-                # Очистка служебных слов
-                if upper_text.endswith(" ТО"):
-                    display_text = display_text[:-3].strip()
-
-                elif upper_text.startswith("ТО "):
-                    display_text = display_text[3:].strip()
-
-                elif upper_text.startswith("ИНАЧЕ "):
-                    display_text = display_text[6:].strip()
-
-                elif upper_text in [
-                    "ТО",
-                    "ИНАЧЕ",
-                    "КОНЕЦ ЕСЛИ",
-                    "КОНЕЦ_ЕСЛИ"
+                if upper_text in [
+                    "ТО", "THEN", "ИНАЧЕ", "ELSE",
+                    "КОНЕЦ ЕСЛИ", "КОНЕЦ_ЕСЛИ", "END IF", "END_IF",
+                    "КОНЕЦ ПОКА", "КОНЕЦ_ПОКА", "END WHILE", "END_WHILE",
+                    "КОНЕЦ ПАРАЛЛЕЛЬНО", "КОНЕЦ_ПАРАЛЛЕЛЬНО", "END PARALLEL", "END_PARALLEL",
+                    "ГРАНИЦА ЦИКЛА КОНЕЦ", "ГРАНИЦА_ЦИКЛА_КОНЕЦ", "END LOOP", "END_LOOP"
                 ]:
                     continue
 
-                # Создание графического блока
-                item = FlowchartItem(display_text, node.shape)
+                # Извлечение комментариев
+                is_comment = False
+                for c_kw in ["КОММЕНТАРИЙ ", "COMMENT ", "REM "]:
+                    if upper_text.startswith(c_kw):
+                        display_text = display_text[len(c_kw):].strip()
+                        is_comment = True
+                        break
+                if upper_text.startswith("//"):
+                    display_text = display_text[2:].strip()
+                    is_comment = True
+
+                pos = node_positions.get(node.id, QPointF(0, node.id * LEVEL_HEIGHT - 150))
+
+                if is_comment:
+                    comments_queue.append((node, display_text, pos))
+                    continue
+
+                # Очистка ключевых слов
+                keywords_to_remove = [
+                    "ВВОД ", "INPUT ", "READ ", "ВЫВОД ", "OUTPUT ", "WRITE ", "PRINT ",
+                    "ПОКА ", "WHILE ", "ЕСЛИ ", "IF ", "ПОДПРОГРАММА ", "SUBROUTINE ",
+                    "ФУНКЦИЯ ", "FUNCTION ", "ПРОЦЕДУРА ", "PROCEDURE ", "CALL ", "ТО",
+                    "ПОДГОТОВКА ", "PREPARATION ", "FOR ", "ПАРАЛЛЕЛЬНО ", "PARALLEL ",
+                    "ГРАНИЦА ЦИКЛА НАЧАЛО:", "ГРАНИЦА_ЦИКЛА_НАЧАЛО:", "LOOP START:", "СОЕДИНИТЕЛЬ ",
+                    "ПОДПРОГРАММА ", "SUBROUTINE ", "ФУНКЦИЯ ", "FUNCTION ", "ПРОЦЕДУРА ", "PROCEDURE ", "CALL "
+                ]
+                for kw in keywords_to_remove:
+                    if upper_text.startswith(kw):
+                        display_text = display_text[len(kw):].strip()
+                        break
+
+                upper_display = display_text.upper()
+                if upper_display.endswith(" ВЫПОЛНИТЬ"):
+                    display_text = display_text[:-10].strip()
+                elif upper_display.endswith(" DO"):
+                    display_text = display_text[:-3].strip()
+                elif upper_display.endswith(" ТО"):
+                    display_text = display_text[:-3].strip()
+                elif upper_display.endswith(" THEN"):
+                    display_text = display_text[:-5].strip()
+
+                node_upper = node.text.strip().upper()
+                current_shape = node.shape.lower() if node.shape else "process"
+
+                if any(node_upper.startswith(kw) for kw in
+                       ["ПОДПРОГРАММА", "SUBROUTINE", "ФУНКЦИЯ", "FUNCTION", "ПРОЦЕДУРА", "PROCEDURE", "CALL"]):
+                    current_shape = "subroutine"
+
+                # Изменяем создание элемента: вместо node.shape передаем current_shape
+                item = FlowchartItem(display_text, current_shape)
                 item.item_id = node.id
+                # ====================================================================
 
-                # Получаем рассчитанную позицию
-                pos = node_positions.get(
-                    node.id,
-                    QPointF(0, node.id * LEVEL_HEIGHT - 150)
-                )
-
-                # Центрирование блока
-                item.setPos(
-                    pos.x() - item.rect.width() / 2,
-                    pos.y() - item.rect.height() / 2
-                )
-
-                # Добавление на сцену
+                item.setPos(pos.x() - item.rect.width() / 2, pos.y() - item.rect.height() / 2)
                 self.scene.addItem(item)
-
-                # Сохраняем в map
                 items_map[node.id] = item
-
-            # Обновляем сцену перед созданием стрелок
-            self.scene.update()
 
             # --- 4. СОЗДАНИЕ ВСЕХ СТРЕЛОК ---
             for edge in edges:
-
+                print(f"Edge: {edge.source} -> {edge.target}, label={edge.label}, is_back={edge.is_back_edge}")
                 src_item = items_map.get(edge.source)
                 tgt_item = items_map.get(edge.target)
 
-                # Если какой-то блок не найден — пропускаем
                 if not src_item or not tgt_item:
                     continue
-
-                # -----------------------------------
-                # Подписи Да / Нет
-                # -----------------------------------
 
                 label = getattr(edge, "label", "") or ""
 
                 if src_item.shape_type == "decision":
-
                     label_lower = label.lower()
-
                     if label_lower in ["да", "yes", "то"]:
                         label = "Да"
-
                     elif label_lower in ["нет", "no", "иначе"]:
                         label = "Нет"
-
                     elif not label:
-
                         src_center = src_item.sceneBoundingRect().center()
                         tgt_center = tgt_item.sceneBoundingRect().center()
-
-                        if tgt_center.x() < src_center.x():
-                            label = "Да"
-                        else:
-                            label = "Нет"
-
-                # -----------------------------------
-                # Создание стрелки
-                # -----------------------------------
-
-                # -----------------------------------
-                # Создание стрелки
-                # -----------------------------------
+                        label = "Да" if tgt_center.x() < src_center.x() else "Нет"
 
                 is_back = getattr(edge, "is_back_edge", False)
-
-                line = ArrowLine(
-                    src_item,
-                    tgt_item,
-                    label,
-                    is_back
-                )
-
-                # ОБЯЗАТЕЛЬНО добавляем стрелку на сцену
+                line = ArrowLine(src_item, tgt_item, label, is_back)
+                line.update_path()  # ← ЯВНО ВЫЗЫВАЕМ МЕТОД
                 self.scene.addItem(line)
 
-                # -----------------------------------
-                # Возвратная стрелка цикла
-                # -----------------------------------
+                # -----------------------------------------------
+                # ОБРАТНАЯ СТРЕЛКА ЦИКЛА
+                # -----------------------------------------------
+                if is_back:
+                    points = self._calculate_back_edge_path(src_item, tgt_item)
+                    line.custom_path = points
+                    line.update_path()  # Обновляем путь с кастомными точками
+                else:
+                    line.update_from_items()
+
+                self.scene.addItem(line)
 
                 if is_back:
+                    # Получаем границы блоков в сцене
+                    src_rect = src_item.sceneBoundingRect()
+                    tgt_rect = tgt_item.sceneBoundingRect()
 
-                    start_pos = (
-                            src_item.pos() +
-                            QPointF(
-                                src_item.rect.width() / 2,
-                                src_item.rect.height()
-                            )
-                    )
+                    # Точка выхода из последнего блока тела цикла (нижний центр)
+                    start_pos = QPointF(src_rect.center().x(), src_rect.bottom())
 
-                    end_pos = (
-                            tgt_item.pos() +
-                            QPointF(
-                                tgt_item.rect.width() / 2,
-                                0
-                            )
-                    )
+                    # Точка входа в ромб-условие (верхний центр)
+                    end_pos = QPointF(tgt_rect.center().x(), tgt_rect.top())
 
-                    offset_x = 150
+                    # Динамическое смещение вправо (зависит от ширины блоков)
+                    max_width = max(src_rect.width(), tgt_rect.width())
+                    offset_x = max_width + 50  # смещение на ширину самого широкого блока + отступ
 
-                    if end_pos.x() < start_pos.x():
-                        offset_x = -150
+                    # Строим обходной путь: вниз → вправо → вверх → влево → вверх
+                    mid1 = QPointF(start_pos.x(), start_pos.y() + 30)
+                    mid2 = QPointF(start_pos.x() + offset_x, start_pos.y() + 30)
+                    mid3 = QPointF(end_pos.x() + offset_x, end_pos.y() - 30)
+                    mid4 = QPointF(end_pos.x(), end_pos.y() - 30)
 
-                    mid1 = QPointF(
-                        start_pos.x(),
-                        start_pos.y() + 25
-                    )
+                    line.custom_path = [start_pos, mid1, mid2, mid3, mid4, end_pos]
 
-                    mid2 = QPointF(
-                        start_pos.x() + offset_x,
-                        start_pos.y() + 25
-                    )
-
-                    mid3 = QPointF(
-                        end_pos.x() + offset_x,
-                        end_pos.y() - 25
-                    )
-
-                    mid4 = QPointF(
-                        end_pos.x(),
-                        end_pos.y() - 25
-                    )
-
-                    line.custom_path = [
-                        start_pos,
-                        mid1,
-                        mid2,
-                        mid3,
-                        mid4,
-                        end_pos
-                    ]
-
-                # обновляем геометрию ВСЕГДА
                 line.update_path()
                 line.update()
 
-            # Центрируем вид
+            # --- 5. СОЗДАНИЕ И ПОЗИЦИОНИРОВАНИЕ КОММЕНТАРИЕВ (ОТ СЕРЕДИНЫ СТРЕЛКИ) ---
+            for c_node, c_text, c_pos in comments_queue:
+                src_block = None
+                tgt_block = None
+
+                # Находим блоки, между которыми пролегает стрелка, к которой относится комментарий
+                # Сначала берем блок, из которого комментарий "выходит"
+                for edge in edges:
+                    if edge.target == c_node.id:
+                        src_block = items_map.get(edge.source)
+                        break
+
+                if src_block:
+                    # Теперь находим следующий блок алгоритма, к которому шла ветка от src_block
+                    for edge in edges:
+                        if edge.source == src_block.item_id and edge.target in items_map:
+                            tgt_block = items_map.get(edge.target)
+                            break
+
+                # Создаем комментарий, передавая ему оба блока для расчета середины линии между ними
+                comment_item = CommentItem(c_text, src_item=src_block, tgt_item=tgt_block)
+
+                if src_block:
+                    # Позиционируем блок комментария справа от середины воображаемой линии
+                    center_point = comment_item.get_arrow_center()
+                    comment_item.setPos(center_point.x() + 90, center_point.y() - 25)
+                else:
+                    comment_item.setPos(c_pos.x() + 120, c_pos.y() - 20)
+
+                self.scene.addItem(comment_item)
+
+            self.scene.update()
             self.view.centerOn(0, 0)
 
         except Exception as e:
+            import traceback
+            print(traceback.format_exc())
             QMessageBox.warning(self, "Ошибка рендеринга", f"Произошел сбой при расчете сетки ветвлений:\n{str(e)}")
 
     def action_export_pdf(self):

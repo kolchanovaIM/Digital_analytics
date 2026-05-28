@@ -18,6 +18,7 @@ class BaseLine(QGraphicsPathItem):
         self.target_item = target_item
         self.label = label
         self.is_back_edge = is_back_edge
+        self._my_label = label
 
         self._label_item = QGraphicsSimpleTextItem(self.label, self)
         self._label_item.setBrush(QBrush(QColor("#2E4350")))
@@ -38,19 +39,110 @@ class BaseLine(QGraphicsPathItem):
         self.update_path()
 
     def update_path(self) -> None:
-        """Построение излома линии связи (умные ортогональные связи)."""
-        p1 = self.source_item.connection_point_towards(self.target_item.sceneBoundingRect().center())
-        p2 = self.target_item.connection_point_towards(self.source_item.sceneBoundingRect().center())
+        print(f"UPDATE_PATH CALLED: label = '{self.label}'")
 
-        path = QPainterPath(p1)
-        if abs(p1.x() - p2.x()) > 20 and abs(p1.y() - p2.y()) > 20:
-            path.lineTo(p1.x(), p2.y())
-        path.lineTo(p2)
+        """Построение излома линии связи (умные ортогональные связи)."""
+
+        # Если задан кастомный путь (для обратных стрелок)
+        if hasattr(self, 'custom_path') and self.custom_path and len(self.custom_path) > 1:
+            path = QPainterPath()
+            path.moveTo(self.custom_path[0])
+            for pt in self.custom_path[1:]:
+                path.lineTo(pt)
+            self.setPath(path)
+            if self.label and len(self.custom_path) > 2:
+                mid_index = len(self.custom_path) // 2
+                center_pt = self.custom_path[mid_index]
+                self._label_item.setPos(center_pt + QPointF(10, -10))
+                self._label_item.setVisible(True)
+            return
+
+        # Получаем границы блоков
+        src_rect = self.source_item.sceneBoundingRect()
+        tgt_rect = self.target_item.sceneBoundingRect()
+        src_center = src_rect.center()
+        tgt_center = tgt_rect.center()
+
+        # Определяем направление и точки подключения
+        path = QPainterPath()
+
+        # ВЕТКА "ДА" (всегда справа от ромба)
+        if self.label == "да":
+            # Стрелка выходит из правой грани ромба
+            start_point = QPointF(src_rect.right(), src_center.y())
+            # Входит в левую грань целевого блока
+            end_point = QPointF(tgt_rect.left(), tgt_center.y())
+
+            path.moveTo(start_point)
+            # Ортогональный маршрут: вправо → вниз/вверх → влево
+            mid_x = (src_rect.right() + tgt_rect.left()) / 2
+            path.lineTo(mid_x, start_point.y())
+            path.lineTo(mid_x, end_point.y())
+            path.lineTo(end_point)
+
+        # ВЕТКА "НЕТ" (всегда слева от ромба)
+        elif self.label == "нет":
+            # Стрелка выходит из левой грани ромба
+            start_point = QPointF(src_rect.left(), src_center.y())
+            # Входит в правую грань целевого блока
+            end_point = QPointF(tgt_rect.right(), tgt_center.y())
+
+            path.moveTo(start_point)
+            # Ортогональный маршрут: влево → вниз/вверх → вправо
+            mid_x = (src_rect.left() + tgt_rect.right()) / 2
+            path.lineTo(mid_x, start_point.y())
+            path.lineTo(mid_x, end_point.y())
+            path.lineTo(end_point)
+
+        # ОБЫЧНАЯ СТРЕЛКА (без явной метки)
+        else:
+            # Определяем направление по положению целевого блока
+            if tgt_center.y() > src_center.y():
+                # Цель снизу
+                start_point = QPointF(src_center.x(), src_rect.bottom())
+                end_point = QPointF(tgt_center.x(), tgt_rect.top())
+
+                path.moveTo(start_point)
+                if abs(start_point.x() - end_point.x()) > 20:
+                    mid_y = (start_point.y() + end_point.y()) / 2
+                    path.lineTo(start_point.x(), mid_y)
+                    path.lineTo(end_point.x(), mid_y)
+                path.lineTo(end_point)
+
+            elif tgt_center.y() < src_center.y():
+                # Цель сверху
+                start_point = QPointF(src_center.x(), src_rect.top())
+                end_point = QPointF(tgt_center.x(), tgt_rect.bottom())
+
+                path.moveTo(start_point)
+                if abs(start_point.x() - end_point.x()) > 20:
+                    mid_y = (start_point.y() + end_point.y()) / 2
+                    path.lineTo(start_point.x(), mid_y)
+                    path.lineTo(end_point.x(), mid_y)
+                path.lineTo(end_point)
+
+            else:
+                # Горизонтальное расположение
+                if tgt_center.x() > src_center.x():
+                    start_point = QPointF(src_rect.right(), src_center.y())
+                    end_point = QPointF(tgt_rect.left(), tgt_center.y())
+                else:
+                    start_point = QPointF(src_rect.left(), src_center.y())
+                    end_point = QPointF(tgt_rect.right(), tgt_center.y())
+
+                path.moveTo(start_point)
+                path.lineTo(end_point)
 
         self.prepareGeometryChange()
         self.setPath(path)
+
+        # Обновляем позицию метки
         if self.label:
-            self._label_item.setPos(path.pointAtPercent(0.5) + QPointF(8, -15))
+            center_pt = path.pointAtPercent(0.5)
+            self._label_item.setPos(center_pt + QPointF(8, -15))
+            self._label_item.setVisible(True)
+        else:
+            self._label_item.setVisible(False)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         pen = QPen(self._pen)
@@ -81,7 +173,10 @@ class BaseLine(QGraphicsPathItem):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPolygon(QPolygonF([p2, p_left, p_right]))
 
-    def update_from_items(self) -> None:
+    def update_from_items(self):
+        # Если это обратная стрелка с кастомным путём — не пересчитываем
+        if hasattr(self, 'custom_path') and self.custom_path:
+            return
         self.update_path()
 
 
@@ -120,120 +215,139 @@ class ArrowLine(BaseLine):
 
         self.update_path()
 
-    def update_path(self):
+    def update_path(self) -> None:
+        print(f"UPDATE_PATH CALLED: label = '{self.label}'")
 
-        path = QPainterPath()
+        """Построение излома линии связи (умные ортогональные связи)."""
 
-        # =====================================
-        # CUSTOM PATH (ЦИКЛ)
-        # =====================================
-
-        if self.custom_path and len(self.custom_path) > 1:
-
+        # Если задан кастомный путь (для обратных стрелок)
+        if hasattr(self, 'custom_path') and self.custom_path and len(self.custom_path) > 1:
+            path = QPainterPath()
             path.moveTo(self.custom_path[0])
-
             for pt in self.custom_path[1:]:
                 path.lineTo(pt)
+            self.setPath(path)
+            if self.label and len(self.custom_path) > 2:
+                mid_index = len(self.custom_path) // 2
+                center_pt = self.custom_path[mid_index]
+                self._label_item.setPos(center_pt + QPointF(10, -10))
+                self._label_item.setVisible(True)
+            return
 
-        # =====================================
-        # ОБЫЧНАЯ СТРЕЛКА
-        # =====================================
+        # Получаем границы блоков
+        src_rect = self.source_item.sceneBoundingRect()
+        tgt_rect = self.target_item.sceneBoundingRect()
+        src_center = src_rect.center()
+        tgt_center = tgt_rect.center()
 
-        else:
+        # Определяем направление и точки подключения
+        path = QPainterPath()
 
-            src_rect = self.source_item.sceneBoundingRect()
-            tgt_rect = self.target_item.sceneBoundingRect()
-
-            src_center = src_rect.center()
-            tgt_center = tgt_rect.center()
-
-            # ВНИЗ
-            if tgt_center.y() > src_center.y():
-
-                start_point = QPointF(
-                    src_center.x(),
-                    src_rect.bottom()
-                )
-
-                end_point = QPointF(
-                    tgt_center.x(),
-                    tgt_rect.top()
-                )
-
-            # ВВЕРХ
-            elif tgt_center.y() < src_center.y():
-
-                start_point = QPointF(
-                    src_center.x(),
-                    src_rect.top()
-                )
-
-                end_point = QPointF(
-                    tgt_center.x(),
-                    tgt_rect.bottom()
-                )
-
-            # ГОРИЗОНТАЛЬНО
-            else:
-
-                if tgt_center.x() > src_center.x():
-
-                    start_point = QPointF(
-                        src_rect.right(),
-                        src_center.y()
-                    )
-
-                    end_point = QPointF(
-                        tgt_rect.left(),
-                        tgt_center.y()
-                    )
-
-                else:
-
-                    start_point = QPointF(
-                        src_rect.left(),
-                        src_center.y()
-                    )
-
-                    end_point = QPointF(
-                        tgt_rect.right(),
-                        tgt_center.y()
-                    )
+        # ВЕТКА "ДА" (всегда справа от ромба)
+        if self.label == "да":
+            # Стрелка выходит из правой грани ромба
+            start_point = QPointF(src_rect.right(), src_center.y())
+            # Входит в левую грань целевого блока
+            end_point = QPointF(tgt_rect.left(), tgt_center.y())
 
             path.moveTo(start_point)
-
-            dx = abs(start_point.x() - end_point.x())
-            dy = abs(start_point.y() - end_point.y())
-
-            # Ортогональный маршрут
-            if dx > 20 and dy > 20:
-                mid_y = (start_point.y() + end_point.y()) / 2
-
-                path.lineTo(start_point.x(), mid_y)
-                path.lineTo(end_point.x(), mid_y)
-
+            # Ортогональный маршрут: вправо → вниз/вверх → влево
+            mid_x = (src_rect.right() + tgt_rect.left()) / 2
+            path.lineTo(mid_x, start_point.y())
+            path.lineTo(mid_x, end_point.y())
             path.lineTo(end_point)
 
-        self.prepareGeometryChange()
+        # ВЕТКА "НЕТ" (всегда слева от ромба)
+        elif self.label == "нет":
+            # Стрелка выходит из левой грани ромба
+            start_point = QPointF(src_rect.left(), src_center.y())
+            # Входит в правую грань целевого блока
+            end_point = QPointF(tgt_rect.right(), tgt_center.y())
 
+            path.moveTo(start_point)
+            # Ортогональный маршрут: влево → вниз/вверх → вправо
+            mid_x = (src_rect.left() + tgt_rect.right()) / 2
+            path.lineTo(mid_x, start_point.y())
+            path.lineTo(mid_x, end_point.y())
+            path.lineTo(end_point)
+
+        # ОБЫЧНАЯ СТРЕЛКА (без явной метки)
+        else:
+            # Определяем направление по положению целевого блока
+            if tgt_center.y() > src_center.y():
+                # Цель снизу
+                start_point = QPointF(src_center.x(), src_rect.bottom())
+                end_point = QPointF(tgt_center.x(), tgt_rect.top())
+
+                path.moveTo(start_point)
+                if abs(start_point.x() - end_point.x()) > 20:
+                    mid_y = (start_point.y() + end_point.y()) / 2
+                    path.lineTo(start_point.x(), mid_y)
+                    path.lineTo(end_point.x(), mid_y)
+                path.lineTo(end_point)
+
+            elif tgt_center.y() < src_center.y():
+                # Цель сверху
+                start_point = QPointF(src_center.x(), src_rect.top())
+                end_point = QPointF(tgt_center.x(), tgt_rect.bottom())
+
+                path.moveTo(start_point)
+                if abs(start_point.x() - end_point.x()) > 20:
+                    mid_y = (start_point.y() + end_point.y()) / 2
+                    path.lineTo(start_point.x(), mid_y)
+                    path.lineTo(end_point.x(), mid_y)
+                path.lineTo(end_point)
+
+            else:
+                # Горизонтальное расположение
+                if tgt_center.x() > src_center.x():
+                    start_point = QPointF(src_rect.right(), src_center.y())
+                    end_point = QPointF(tgt_rect.left(), tgt_center.y())
+                else:
+                    start_point = QPointF(src_rect.left(), src_center.y())
+                    end_point = QPointF(tgt_rect.right(), tgt_center.y())
+
+                path.moveTo(start_point)
+                path.lineTo(end_point)
+
+        self.prepareGeometryChange()
         self.setPath(path)
 
-        # =====================================
-        # LABEL
-        # =====================================
-
+        # Обновляем позицию метки
         if self.label:
-
             center_pt = path.pointAtPercent(0.5)
-
-            self._label_item.setText(str(self.label))
-
-            self._label_item.setPos(
-                center_pt + QPointF(10, -10)
-            )
-
+            self._label_item.setPos(center_pt + QPointF(8, -15))
             self._label_item.setVisible(True)
-
         else:
-
             self._label_item.setVisible(False)
+
+    def set_path_points(self, points):
+        """Устанавливает кастомный путь из списка точек."""
+        self.custom_path = points
+        self.update_path()
+
+    def update_back_edge_path(self):
+        """Пересчитывает обходной путь для обратной стрелки при перемещении блоков."""
+        if not self.custom_path:
+            return
+
+        # Пересчитываем точки на основе новых позиций блоков
+        src_rect = self.source_item.sceneBoundingRect()
+        tgt_rect = self.target_item.sceneBoundingRect()
+
+        start_pos = QPointF(src_rect.center().x(), src_rect.bottom())
+        end_pos = QPointF(tgt_rect.center().x(), tgt_rect.top())
+
+        max_width = max(src_rect.width(), tgt_rect.width())
+        offset_x = max_width + 50
+
+        self.custom_path = [
+            start_pos,
+            QPointF(start_pos.x(), start_pos.y() + 30),
+            QPointF(start_pos.x() + offset_x, start_pos.y() + 30),
+            QPointF(end_pos.x() + offset_x, end_pos.y() - 30),
+            QPointF(end_pos.x(), end_pos.y() - 30),
+            end_pos
+        ]
+
+        self.update_path()

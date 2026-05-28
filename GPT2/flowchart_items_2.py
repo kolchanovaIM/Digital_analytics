@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPainterPath, QPolygonF
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPainterPath, QPolygonF, QFontMetrics
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QGraphicsSceneMouseEvent
 import math
 from constants import (
@@ -57,11 +57,14 @@ class FlowchartItem(QGraphicsItem):
     def __init__(self, text: str, shape_type: str = "process", parent=None):
         super().__init__(parent)
         self.text = text
-        self.shape_type = shape_type
+        # Переводим в нижний регистр для безопасного сравнения по ГОСТу
+        self.shape_type = shape_type.lower() if shape_type else "process"
 
-        # Базовые размеры блока[cite: 2]
-        self.rect = QRectF(0, 0, 140, 80)
-        self._lines: list[BaseLine] = []  # Инициализация списка линий[cite: 2]
+        # Базовые размеры блока по умолчанию
+        self.width = 140
+        self.height = 80
+        self.rect = QRectF(0, 0, self.width, self.height)
+        self._lines: list[BaseLine] = []
 
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -69,7 +72,7 @@ class FlowchartItem(QGraphicsItem):
 
         self.font = QFont("Arial", 10)
 
-        # ВОССТАНОВЛЕНО: Инициализация интерактивных ручек изменения размера
+        # Инициализация интерактивных ручек изменения размера
         self._handles: list[ResizeHandle] = []
         self._init_handles()
 
@@ -84,83 +87,8 @@ class FlowchartItem(QGraphicsItem):
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()
-
-        if self.shape_type == "decision":
-            points = [
-                QPointF(self.rect.center().x(), self.rect.top()),
-                QPointF(self.rect.right(), self.rect.center().y()),
-                QPointF(self.rect.center().x(), self.rect.bottom()),
-                QPointF(self.rect.left(), self.rect.center().y()),
-            ]
-            path.addPolygon(QPolygonF(points))
-        elif self.shape_type == "io":
-            points = [
-                QPointF(self.rect.left() + 20, self.rect.top()),
-                QPointF(self.rect.right(), self.rect.top()),
-                QPointF(self.rect.right() - 20, self.rect.bottom()),
-                QPointF(self.rect.left(), self.rect.bottom()),
-            ]
-            path.addPolygon(QPolygonF(points))
-
-        elif self.shape_type == "top_half_circle":
-            w = self.rect.width()
-            h = self.rect.height()
-            left = self.rect.left()
-            right = self.rect.right()
-            top = self.rect.top()
-            bottom = self.rect.bottom()
-
-            # Точно повторяем контур отрисовки
-            path.moveTo(left, bottom)
-            path.lineTo(right, bottom)
-            path.lineTo(right, top + h / 2)
-            path.arcTo(self.rect, 0, 180)
-            path.lineTo(left, bottom)
-            path.closeSubpath()
-
-        elif self.shape_type == "bottom_half_circle":
-            w = self.rect.width()
-            h = self.rect.height()
-            left = self.rect.left()
-            right = self.rect.right()
-            top = self.rect.top()
-            bottom = self.rect.bottom()
-
-            # Точно повторяем контур отрисовки
-            path.moveTo(left, top)
-            path.lineTo(right, top)
-            path.lineTo(right, bottom - h / 2)
-            path.arcTo(self.rect, 0, -180)
-            path.lineTo(left, top)
-            path.closeSubpath()
-        elif self.shape_type in ["terminal", "rounded_rect"]:
-            # Вычисляем радиус скругления как половину высоты, чтобы получить идеальный овал/капсулу
-            r = self.rect.height() / 2
-            path.addRoundedRect(self.rect, r, r)
-        else:
-            path.addRect(self.rect)
-        return path
-
-    def background_color(self) -> str:
-        return {
-            "process": PROCESS_COLOR,
-            "decision": DECISION_COLOR,
-            "io": IO_COLOR,
-            "terminal": TERMINAL_COLOR,
-        }.get(self.shape_type, PROCESS_COLOR)
-
-    def paint(self, painter: QPainter, option, widget=None) -> None:
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        pen = QPen(QColor("#38505B"), 2)
-        if self.isSelected():
-            pen.setColor(QColor("#1F6FB2"))
-            pen.setWidth(3)
-        painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(self.background_color())))
-
-        w = self.rect.width()
-        h = self.rect.height()
+        W = self.rect.width()
+        H = self.rect.height()
         left = self.rect.left()
         right = self.rect.right()
         top = self.rect.top()
@@ -168,108 +96,151 @@ class FlowchartItem(QGraphicsItem):
         cx = self.rect.center().x()
         cy = self.rect.center().y()
 
-        if self.shape_type == "process":
-            painter.drawRect(self.rect)
+        # Мапинг точной геометрической формы по ГОСТ 19.701-90 для кликов мыши
+        if self.shape_type in ["decision", "if", "условие", "если"]:
+            points = [QPointF(cx, top), QPointF(right, cy), QPointF(cx, bottom), QPointF(left, cy)]
+            path.addPolygon(QPolygonF(points))
+        elif self.shape_type in ["io", "input", "output", "ввод", "вывод"]:
+            skew = 20
+            points = [QPointF(left + skew, top), QPointF(right, top), QPointF(right - skew, bottom),
+                      QPointF(left, bottom)]
+            path.addPolygon(QPolygonF(points))
+        elif self.shape_type in ["terminal", "start", "end", "rounded_rect", "начало", "конец"]:
+            r = H / 2 if self.shape_type in ["terminal", "start", "end", "начало", "конец"] else 12
+            path.addRoundedRect(self.rect, r, r)
+        elif self.shape_type in ["preparation", "подготовка", "hexagon"]:
+            indent = 20
+            points = [QPointF(left + indent, top), QPointF(right - indent, top), QPointF(right, cy),
+                      QPointF(right - indent, bottom), QPointF(left + indent, bottom), QPointF(left, cy)]
+            path.addPolygon(QPolygonF(points))
+        elif self.shape_type in ["loop_start", "граница_цикла_начало"]:
+            indent = 15
+            points = [QPointF(left, top), QPointF(right, top), QPointF(right, bottom - indent),
+                      QPointF(right - indent, bottom), QPointF(left + indent, bottom), QPointF(left, bottom - indent)]
+            path.addPolygon(QPolygonF(points))
+        elif self.shape_type in ["loop_end", "граница_цикла_конец"]:
+            indent = 15
+            points = [QPointF(left + indent, top), QPointF(right - indent, top), QPointF(right, top + indent),
+                      QPointF(right, bottom), QPointF(left, bottom), QPointF(left, top + indent)]
+            path.addPolygon(QPolygonF(points))
+        elif self.shape_type in ["connector", "соединитель", "circle"]:
+            path.addEllipse(self.rect)
+        else:
+            path.addRect(self.rect)
+        return path
 
-        elif self.shape_type == "circle":
-            painter.drawEllipse(self.rect)
+    def background_color(self) -> str:
+        if self.shape_type in ["decision", "if", "условие", "если"]:
+            return DECISION_COLOR
+        elif self.shape_type in ["io", "input", "output", "ввод", "вывод"]:
+            return IO_COLOR
+        elif self.shape_type in ["terminal", "start", "end", "начало", "конец"]:
+            return TERMINAL_COLOR
+        return PROCESS_COLOR
 
-        elif self.shape_type == "decision":
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # Гарантируем, что shape_type в нижнем регистре без лишних пробелов для точного сравнения
+        shape_type_lower = str(self.shape_type).strip().lower() if self.shape_type else "process"
+
+        # Стилизация пера по ГОСТ
+        pen = QPen(QColor("#38505B"), 2)
+        if self.isSelected():
+            pen.setColor(QColor("#1F6FB2"))
+            pen.setWidth(3)
+        if shape_type_lower in ["comment", "комментарий"]:
+            pen.setStyle(Qt.PenStyle.DashLine)
+
+        painter.setPen(pen)
+        painter.setBrush(QBrush(QColor(self.background_color())))
+
+        W = self.rect.width()
+        H = self.rect.height()
+        left = self.rect.left()
+        right = self.rect.right()
+        top = self.rect.top()
+        bottom = self.rect.bottom()
+        cx = self.rect.center().x()
+        cy = self.rect.center().y()
+
+        # --- ОТРИСОВКА ГЕОМЕТРИИ ПО ТЗ И ГОСТ ---
+        if shape_type_lower in ["start", "end", "terminal", "начало", "конец"]:
+            painter.drawRoundedRect(self.rect, H / 2, H / 2)
+
+        elif shape_type_lower in ["io", "input", "output", "ввод", "вывод"]:
+            skew = 20
+            points = [QPointF(left + skew, top), QPointF(right, top), QPointF(right - skew, bottom),
+                      QPointF(left, bottom)]
+            painter.drawPolygon(QPolygonF(points))
+
+        elif shape_type_lower in ["decision", "if", "условие", "если"]:
             points = [QPointF(cx, top), QPointF(right, cy), QPointF(cx, bottom), QPointF(left, cy)]
             painter.drawPolygon(QPolygonF(points))
 
-        elif self.shape_type == "io":
-            points = [QPointF(left + 20, top), QPointF(right, top), QPointF(right - 20, bottom), QPointF(left, bottom)]
-            painter.drawPolygon(QPolygonF(points))
-
-
-
-        elif self.shape_type == "top_half_circle":
-
-            path = QPainterPath()
-
-            path.moveTo(left, bottom)
-
-            path.lineTo(right, bottom)
-
-            path.lineTo(right, top + h / 2)
-
-            path.arcTo(self.rect, 0, 180)
-
-            path.lineTo(left, bottom)
-
-            path.closeSubpath()
-
-            painter.drawPath(path)
-
-
-        elif self.shape_type == "bottom_half_circle":
-
-            path = QPainterPath()
-
-            path.moveTo(left, top)
-
-            path.lineTo(right, top)
-
-            path.lineTo(right, bottom - h / 2)
-
-            path.arcTo(self.rect, 0, -180)
-
-            path.lineTo(left, top)
-
-            path.closeSubpath()
-
-            painter.drawPath(path)
-
-        elif self.shape_type == "inv_trapezoid":
-            points = [QPointF(left, top), QPointF(right, top), QPointF(right - 20, bottom), QPointF(left + 20, bottom)]
-            painter.drawPolygon(QPolygonF(points))
-
-
-        elif self.shape_type in ["rounded_rect", "terminal"]:
-
-            # Изменяем фиксированный радиус 12 на динамический h / 2.
-
-            # Если это блок "terminal" (Начало/Конец), он станет чистым овалом (капсулой).
-
-            radius = h / 2 if self.shape_type == "terminal" else 12
-
-            painter.drawRoundedRect(self.rect, radius, radius)
-
-        elif self.shape_type == "double_rect":
+        elif shape_type_lower in ["subroutine", "function", "procedure", "подпрограмма", "функция", "процедура",
+                                  "double_rect"]:
             painter.drawRect(self.rect)
-            offset = 12
-            painter.drawLine(QPointF(left + offset, top), QPointF(left + offset, bottom))
-            painter.drawLine(QPointF(right - offset, top), QPointF(right - offset, bottom))
+            indent = 15
+            painter.drawLine(QPointF(left + indent, top), QPointF(left + indent, bottom))
+            painter.drawLine(QPointF(right - indent, top), QPointF(right - indent, bottom))
 
-        elif self.shape_type == "hexagon":
-            offset = 20
-            points = [QPointF(left + offset, top), QPointF(right - offset, top), QPointF(right, cy),
-                      QPointF(right - offset, bottom), QPointF(left + offset, bottom), QPointF(left, cy)]
+        elif shape_type_lower in ["preparation", "подготовка", "hexagon"]:
+            indent = 20
+            points = [QPointF(left + indent, top), QPointF(right - indent, top), QPointF(right, cy),
+                      QPointF(right - indent, bottom), QPointF(left + indent, bottom), QPointF(left, cy)]
             painter.drawPolygon(QPolygonF(points))
+
+        elif shape_type_lower in ["parallel", "параллельно"]:
+            painter.drawRect(self.rect)
+            painter.drawLine(QPointF(left, top + 6), QPointF(right, top + 6))
+            painter.drawLine(QPointF(left, bottom - 6), QPointF(right, bottom - 6))
+
+        elif shape_type_lower in ["loop_start", "граница_цикла_начало"]:
+            indent = 15
+            points = [QPointF(left, top), QPointF(right, top), QPointF(right, bottom - indent),
+                      QPointF(right - indent, bottom), QPointF(left + indent, bottom), QPointF(left, bottom - indent)]
+            painter.drawPolygon(QPolygonF(points))
+
+        elif shape_type_lower in ["loop_end", "граница_цикла_конец"]:
+            indent = 15
+            points = [QPointF(left + indent, top), QPointF(right - indent, top), QPointF(right, top + indent),
+                      QPointF(right, bottom), QPointF(left, bottom), QPointF(left, top + indent)]
+            painter.drawPolygon(QPolygonF(points))
+
+        elif shape_type_lower in ["connector", "соединитель", "circle"]:
+            painter.drawEllipse(self.rect)
+
+        elif shape_type_lower in ["comment", "комментарий"]:
+            path = QPainterPath()
+            path.moveTo(right, top)
+            path.lineTo(left, top)
+            path.lineTo(left, bottom)
+            path.lineTo(right, bottom)
+            painter.drawPath(path)
 
         else:
             painter.drawRect(self.rect)
 
-        # Отрисовка текста
+        # --- СДВИГИ И РАСЧЁТ ТЕКСТА ---
         painter.setPen(QPen(QColor("#1E2F35")))
         if hasattr(self, 'custom_font'):
             painter.setFont(self.custom_font)
         else:
             painter.setFont(self.font)
 
-        if self.shape_type in ["decision", "hexagon", "inv_trapezoid"]:
+        if shape_type_lower in ["decision", "if", "условие", "если", "preparation", "подготовка", "hexagon"]:
             text_rect = self.rect.adjusted(25, 12, -25, -12)
-        elif self.shape_type in ["top_half_circle"]:
-            text_rect = self.rect.adjusted(15, h / 2, -15, -5)  # Смещаем текст вниз
-        elif self.shape_type in ["bottom_half_circle"]:
-            text_rect = self.rect.adjusted(15, 5, -15, -h / 2)  # Смещаем текст вверх
+        elif shape_type_lower in ["io", "input", "output", "ввод", "вывод"]:
+            text_rect = self.rect.adjusted(22, 10, -22, -10)
+        elif shape_type_lower in ["subroutine", "function", "procedure", "подпрограмма", "функция", "процедура",
+                                  "double_rect"]:
+            text_rect = self.rect.adjusted(22, 10, -22, -10)
         else:
             text_rect = self.rect.adjusted(15, 10, -15, -10)
 
         painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.text)
 
-        # Обновление видимости и позиций ручек при выделении
         for handle in self._handles:
             handle.setVisible(self.isSelected())
             handle.setPos(self._handle_pos(handle.corner))
@@ -299,7 +270,11 @@ class FlowchartItem(QGraphicsItem):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
-            self.update_lines()
+            for line in self._lines:
+                if hasattr(line, 'is_back_edge') and line.is_back_edge:
+                    line.update_back_edge_path()  # специальный метод для обратных стрелок
+                else:
+                    line.update_from_items()
         return super().itemChange(change, value)
 
     def register_line(self, line: BaseLine) -> None:
@@ -441,3 +416,63 @@ class ManualArrowItem(QGraphicsItem):
         painter.setBrush(color)
         painter.setPen(QPen(color, 1))
         painter.drawPolygon(arrow_head)
+
+
+
+class CommentItem(QGraphicsItem):
+    def __init__(self, text: str, src_item: QGraphicsItem = None, tgt_item: QGraphicsItem = None):
+        super().__init__()
+        self.text = text
+        self.src_item = src_item  # Блок-источник стрелки
+        self.tgt_item = tgt_item  # Блок-получатель стрелки
+        self.padding = 10
+
+        font = QPainter().font() if QPainter() else QFont()
+        metrics = QFontMetrics(font)
+        lines = self.text.split('\n')
+        text_width = max([metrics.horizontalAdvance(l) for l in lines]) if lines else 50
+        text_height = metrics.height() * max(len(lines), 1)
+
+        self.text_rect = QRectF(0, 0, text_width + self.padding * 2, text_height + self.padding * 2)
+
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+
+    def boundingRect(self) -> QRectF:
+        # Большой bounding box вокруг, чтобы Qt не обрезал линию пунктира при зуме/движении
+        return self.text_rect.adjusted(-1000, -500, 500, 500)
+
+    def get_arrow_center(self) -> QPointF:
+        """Динамически находит середину между двумя блоками на сцене"""
+        if self.src_item and self.tgt_item:
+            p1 = self.src_item.sceneBoundingRect().center()
+            p2 = self.tgt_item.sceneBoundingRect().center()
+            return QPointF((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2)
+        elif self.src_item:
+            return self.src_item.sceneBoundingRect().center()
+        return QPointF(0, 0)
+
+    def paint(self, painter: QPainter, option, widget) -> None:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # 1. Отрисовка текста комментария
+        painter.setPen(QPen(QColor("#4CAF50"), 1))
+        painter.drawText(self.text_rect, Qt.AlignmentFlag.AlignCenter, self.text)
+
+        # 2. Отрисовка скобки ГОСТ
+        r = self.text_rect
+        painter.setPen(QPen(QColor("#1A5F7A"), 2, Qt.PenStyle.SolidLine))
+        painter.drawLine(QPointF(r.left(), r.top()), QPointF(r.left(), r.bottom()))
+        painter.drawLine(QPointF(r.left(), r.top()), QPointF(r.left() + 10, r.top()))
+        painter.drawLine(QPointF(r.left(), r.bottom()), QPointF(r.left() + 10, r.bottom()))
+
+        # 3. Отрисовка пунктирной линии к середине линии связи
+        if self.src_item:
+            center_scene = self.get_arrow_center()
+            # Переводим точку центра из координат сцены в локальные координаты комментария
+            target_pos_local = self.mapFromScene(center_scene)
+
+            start_p = QPointF(r.left(), r.center().y())
+
+            painter.setPen(QPen(QColor("#777777"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(start_p, target_pos_local)
